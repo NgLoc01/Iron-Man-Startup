@@ -1,9 +1,13 @@
-// The Swift Programming Language
-// https://docs.swift.org/swift-book
+import SwiftUI
 
 @main
-struct IronManStartup {
-    static func main() {
-        print("Hello, world!")
+struct IronManStartupApp: App {
+    var body: some Scene {
+        MenuBarExtra("Iron Man Startup", systemImage: "waveform.circle") {
+            Text("Loading...")
+                .padding()
+                .frame(minWidth: 460, minHeight: 100)
+        }
+        .menuBarExtraStyle(.window)
     }
 }

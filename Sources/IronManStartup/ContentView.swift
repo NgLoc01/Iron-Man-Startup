@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 
 /* Things learned:
 struct ContentView: View   defines screen as a View
@@ -21,6 +22,9 @@ Current UI setup:
 */
 
 struct ContentView: View {
+    @State private var audioPlayer: AVAudioPlayer?
+    @State private var isHovering = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) { //Main vertical stack for the entire content
 
@@ -36,6 +40,15 @@ struct ContentView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(width: 128, height: 128)
+                        .scaleEffect(isHovering ? 1.12 : 1.0)
+                        .animation(.easeInOut(duration: 0.2), value: isHovering)
+                        .onHover { isHovering = $0 }
+                        .onTapGesture {
+                            if let url = Bundle.module.url(forResource: "jarvis", withExtension: "mp3") {
+                                audioPlayer = try? AVAudioPlayer(contentsOf: url)
+                                audioPlayer?.play()
+                            }
+                        }
                 }
 
             }

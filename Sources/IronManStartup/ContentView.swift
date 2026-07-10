@@ -24,6 +24,7 @@ Current UI setup:
 struct ContentView: View {
     @State private var audioPlayer: AVAudioPlayer?
     @State private var isHovering = false
+    @EnvironmentObject private var detector: DoubleClapDetectorService
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) { //Main vertical stack for the entire content
@@ -55,27 +56,32 @@ struct ContentView: View {
 
             Spacer(minLength: 0)
 
-            ZStack { //ZStack for pulse indicator
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.91, green: 0.44, blue: 0.17),
-                                Color(red: 0.76, green: 0.30, blue: 0.10)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+            Button {
+                detector.toggleListening()
+            } label: {
+                ZStack { //ZStack for pulse indicator, also doubles as the listen toggle
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.25, green: 0.68, blue: 0.95),
+                                    Color(red: 0.08, green: 0.35, blue: 0.70)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                         )
-                    )
-                    .frame(width: 110, height: 110)
+                        .frame(width: 110, height: 110)
 
-                Text("OFF")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Color.black.opacity(0.85))
+                    Text(detector.isListening ? "ON" : "OFF")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.white)
+                }
             }
+            .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
 
-            Text("Standing by")
+            Text(detector.isListening ? "Listening" : "Standing by")
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .frame(maxWidth: .infinity, alignment: .center)
 

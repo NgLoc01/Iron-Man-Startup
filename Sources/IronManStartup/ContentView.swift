@@ -72,6 +72,11 @@ struct ContentView: View {
                             )
                         )
                         .frame(width: 110, height: 110)
+                        .scaleEffect(1 + min(CGFloat(detector.level) * 2.2, 1.1))
+                        .shadow(
+                            color: .blue.opacity(0.35 + min(CGFloat(detector.level) * 0.4, 0.4)),
+                            radius: 22
+                        )
 
                     Text(detector.isListening ? "ON" : "OFF")
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
@@ -80,6 +85,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
+            .animation(.easeOut(duration: 0.2), value: detector.level)
 
             Text(detector.isListening ? "Listening" : "Standing by")
                 .font(.system(size: 16, weight: .semibold, design: .rounded))

@@ -87,6 +87,9 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .animation(.easeOut(duration: 0.2), value: detector.level)
 
+            SoundwaveView(history: detector.history, threshold: detector.threshold)
+                .frame(height: 70)
+
             Text(detector.isListening ? "Listening" : "Standing by")
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -98,12 +101,12 @@ struct ContentView: View {
                     Text("Sensitivity threshold")
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     Spacer()
-                    Text("0.05")
+                    Text(String(format: "%.2f", detector.threshold))
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.blue)
                 }
-                Slider(value: .constant(0.05), in: 0.05...0.6, step: 0.01)
-                    .tint(.orange)
+                Slider(value: $detector.threshold, in: 0.05...0.6, step: 0.01)
+                    .tint(.blue)
             }
 
             Spacer(minLength: 0)
@@ -125,6 +128,46 @@ struct ContentView: View {
                 endPoint: .bottom
             )
         )
-        .foregroundStyle(Color(red: 0.96, green: 0.95, blue: 0.93)) //belongs to main VStack, sets text color 
+        .foregroundStyle(Color(red: 0.96, green: 0.95, blue: 0.93)) //belongs to main VStack, sets text color
+    }
+}
+
+private struct SoundwaveView: View {
+    let history: [Float]
+    let threshold: Float
+
+    var body: some View {
+        GeometryReader { _ in
+            Canvas { context, size in
+                if history.count < 2 { return }
+
+                let thresholdY = yPosition(for: threshold, height: size.height)
+                var thresholdPath = Path()
+                thresholdPath.move(to: CGPoint(x: 0, y: thresholdY))
+                thresholdPath.addLine(to: CGPoint(x: size.width, y: thresholdY))
+                context.stroke(
+                    thresholdPath,
+                    with: .color(.cyan.opacity(0.7)),
+                    style: StrokeStyle(lineWidth: 1, dash: [4, 4])
+                )
+
+                var path = Path()
+                for (index, value) in history.enumerated() {
+                    let x = CGFloat(index) / CGFloat(max(history.count - 1, 1)) * size.width
+                    let y = yPosition(for: value, height: size.height)
+                    if index == 0 {
+                        path.move(to: CGPoint(x: x, y: y))
+                    } else {
+                        path.addLine(to: CGPoint(x: x, y: y))
+                    }
+                }
+                context.stroke(path, with: .color(.blue), lineWidth: 2)
+            }
+        }
+    }
+
+    private func yPosition(for value: Float, height: CGFloat) -> CGFloat {
+        let clamped = min(max(value, 0), 0.8)
+        return height - CGFloat(clamped / 0.8) * (height - 2)
     }
 }

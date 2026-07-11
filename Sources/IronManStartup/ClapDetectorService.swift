@@ -13,6 +13,8 @@ struct ClapLogEntry: Identifiable {
 }
 
 final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
+    private let historyLength = 120
+
     @Published var isListening = false
     @Published var threshold: Float = 0.05
     @Published var level: Float = 0
@@ -60,7 +62,12 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             let rms = Self.computeRms(buffer: buffer)
             DispatchQueue.main.async {
-                self?.level = rms
+                guard let self else { return }
+                self.level = rms
+                self.history.append(rms)
+                if self.history.count > self.historyLength {
+                    self.history.removeFirst(self.history.count - self.historyLength)
+                }
             }
         }
 

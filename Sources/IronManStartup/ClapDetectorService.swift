@@ -14,6 +14,9 @@ struct ClapLogEntry: Identifiable {
 
 final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
     private let historyLength = 120
+    private let debounceMs: Double = 120
+    private let minGapMs: Double = 100
+    private let maxGapMs: Double = 600
 
     @Published var isListening = false
     @Published var threshold: Float = 0.05
@@ -24,6 +27,9 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
     @Published var pulseKind: ClapPulseKind?
 
     private var audioEngine: AVAudioEngine?
+    private var isAbove = false
+    private var lastTriggerMs: Double = 0
+    private var pendingFirstMs: Double?
 
     func toggleListening() {
         isListening ? stop() : start()
@@ -51,6 +57,9 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         audioEngine = nil
         isListening = false
         level = 0
+        isAbove = false
+        pendingFirstMs = nil
+        addLog("Listening stopped")
     }
 
     private func startEngine() {
@@ -61,13 +70,9 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         inputNode.removeTap(onBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             let rms = Self.computeRms(buffer: buffer)
+            let nowMs = Date().timeIntervalSince1970 * 1000
             DispatchQueue.main.async {
-                guard let self else { return }
-                self.level = rms
-                self.history.append(rms)
-                if self.history.count > self.historyLength {
-                    self.history.removeFirst(self.history.count - self.historyLength)
-                }
+                self?.processSample(rms: rms, nowMs: nowMs)
             }
         }
 
@@ -75,10 +80,63 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
             try engine.start()
             audioEngine = engine
             isListening = true
+            addLog("Listening started")
         } catch {
             errorText = "Failed to start microphone: \(error.localizedDescription)"
             inputNode.removeTap(onBus: 0)
             audioEngine = nil
+        }
+    }
+
+    private func processSample(rms: Float, nowMs: Double) {
+        level = rms
+        history.append(rms)
+        if history.count > historyLength {
+            history.removeFirst(history.count - historyLength)
+        }
+
+        let above = rms > threshold
+        if above && !isAbove {
+            isAbove = true
+            registerClap(nowMs: nowMs)
+        } else if !above {
+            isAbove = false
+        }
+
+        if let pendingFirstMs, nowMs - pendingFirstMs > maxGapMs {
+            self.pendingFirstMs = nil
+        }
+    }
+
+    private func registerClap(nowMs: Double) {
+        if nowMs - lastTriggerMs < debounceMs { return }
+        lastTriggerMs = nowMs
+
+        if pendingFirstMs == nil {
+            pendingFirstMs = nowMs
+            addLog("Clap (waiting for second...)")
+            return
+        }
+
+        guard let firstMs = pendingFirstMs else { return }
+        let gap = nowMs - firstMs
+
+        if gap >= minGapMs && gap <= maxGapMs {
+            pendingFirstMs = nil
+            addLog("Double clap detected")
+        } else if gap > maxGapMs {
+            pendingFirstMs = nowMs
+            addLog("Clap (waiting for second...)")
+        }
+    }
+
+    private func addLog(_ text: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let entry = ClapLogEntry(text: text, time: formatter.string(from: Date()))
+        logs.insert(entry, at: 0)
+        if logs.count > 12 {
+            logs = Array(logs.prefix(12))
         }
     }
 

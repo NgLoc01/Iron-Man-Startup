@@ -109,6 +109,32 @@ struct ContentView: View {
                     .tint(.blue)
             }
 
+            Text("EVENT LOG")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if detector.logs.isEmpty {
+                        Text("No events yet. Clap to begin.")
+                            .font(.system(size: 13, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(detector.logs) { entry in
+                            HStack(spacing: 12) {
+                                Text(entry.time)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 74, alignment: .leading)
+                                Text(entry.text)
+                            }
+                            .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 190)
+            .padding(.horizontal, 2)
+
             Spacer(minLength: 0)
 
             HStack {

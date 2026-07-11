@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Foundation
 
@@ -61,6 +62,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         level = 0
         isAbove = false
         pendingFirstMs = nil
+        pulseKind = nil
         addLog("Listening stopped")
     }
 
@@ -137,6 +139,9 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         pulseResetWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             self?.pulseKind = nil
+            if kind == .double {
+                self?.openYouTubeLink()
+            }
         }
         pulseResetWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: workItem)
@@ -147,6 +152,15 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         case .double:
             addLog("Double clap detected")
         }
+    }
+
+    private func openYouTubeLink() {
+        stop()
+        guard let url = URL(string: "https://www.youtube.com/watch?v=pAgnJDJN4VA") else { return }
+
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = false
+        NSWorkspace.shared.open(url, configuration: config, completionHandler: nil)
     }
 
     private func addLog(_ text: String) {

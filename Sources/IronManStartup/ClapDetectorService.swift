@@ -30,6 +30,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
     private var isAbove = false
     private var lastTriggerMs: Double = 0
     private var pendingFirstMs: Double?
+    private var pulseResetWorkItem: DispatchWorkItem?
 
     func toggleListening() {
         isListening ? stop() : start()
@@ -55,6 +56,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
+        pulseResetWorkItem?.cancel()
         isListening = false
         level = 0
         isAbove = false
@@ -114,7 +116,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
 
         if pendingFirstMs == nil {
             pendingFirstMs = nowMs
-            addLog("Clap (waiting for second...)")
+            fireEvent(.single)
             return
         }
 
@@ -123,10 +125,27 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
 
         if gap >= minGapMs && gap <= maxGapMs {
             pendingFirstMs = nil
-            addLog("Double clap detected")
+            fireEvent(.double)
         } else if gap > maxGapMs {
             pendingFirstMs = nowMs
+            fireEvent(.single)
+        }
+    }
+
+    private func fireEvent(_ kind: ClapPulseKind) {
+        pulseKind = kind
+        pulseResetWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.pulseKind = nil
+        }
+        pulseResetWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: workItem)
+
+        switch kind {
+        case .single:
             addLog("Clap (waiting for second...)")
+        case .double:
+            addLog("Double clap detected")
         }
     }
 

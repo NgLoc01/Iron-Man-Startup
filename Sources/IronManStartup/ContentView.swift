@@ -78,7 +78,17 @@ struct ContentView: View {
                             radius: 22
                         )
 
-                    Text(detector.isListening ? "ON" : "OFF")
+                    if detector.pulseKind != nil {
+                        Circle()
+                            .stroke(
+                                detector.pulseKind == .double ? Color.cyan : Color.blue,
+                                lineWidth: 2
+                            )
+                            .frame(width: 120, height: 120)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+
+                    Text(detector.isListening ? (detector.pulseKind == .double ? "DOUBLE" : "ON") : "OFF")
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
                         .foregroundStyle(Color.white)
                 }
@@ -86,6 +96,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
             .animation(.easeOut(duration: 0.2), value: detector.level)
+            .animation(.easeOut(duration: 0.25), value: detector.pulseKind != nil)
 
             SoundwaveView(history: detector.history, threshold: detector.threshold)
                 .frame(height: 70)

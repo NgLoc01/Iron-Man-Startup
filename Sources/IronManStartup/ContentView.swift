@@ -15,9 +15,11 @@ Current UI setup:
 - Main VStack contains all content
     - Header section (VStack)
         - HStack: "J.A.R.V.I.S" title (left) + JARVIS image 128x128 (right)
-    - Pulse indicator (ZStack): orange gradient circle + "OFF" label
-    - "Standing by" status text (centered)
+    - Pulse indicator (ZStack): blue gradient circle, pulse ring + "OFF"/"ON"/"DOUBLE" label
+    - Soundwave tracker (rolling level history + threshold line)
+    - "Standing by" status text (centered), error banner when set
     - Sensitivity threshold section (VStack)
+    - Event log (scrollable, timestamped)
     - Quit button (bottom left)
 */
 
@@ -104,6 +106,18 @@ struct ContentView: View {
             Text(detector.isListening ? "Listening" : "Standing by")
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .frame(maxWidth: .infinity, alignment: .center)
+
+            if let errorText = detector.errorText {
+                Text(errorText)
+                    .font(.system(size: 13, weight: .regular, design: .rounded))
+                    .foregroundStyle(Color.red.opacity(0.9))
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(10)
+                    .background(
+                        Color.red.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+            }
 
             Spacer(minLength: 0)
 

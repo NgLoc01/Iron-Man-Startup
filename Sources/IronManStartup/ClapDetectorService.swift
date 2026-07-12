@@ -13,18 +13,6 @@ struct ClapLogEntry: Identifiable {
     let time: String
 }
 
-private struct VSCodeStorage: Decodable {
-    let backupWorkspaces: BackupWorkspaces?
-}
-
-private struct BackupWorkspaces: Decodable {
-    let folders: [BackupFolder]
-}
-
-private struct BackupFolder: Decodable {
-    let folderUri: String
-}
-
 private enum VSCodeFolderSelection {
     case success(String)
     case failure(String)
@@ -207,22 +195,18 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         guard let storageURL = firstExistingVSCodeStorageURL() else {
             return .failure("VS Code storage.json was not found")
         }
-        guard let data = try? Data(contentsOf: storageURL) else {
+        guard let data = try? Data(contentsOf: storageURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return .failure("Unable to read VS Code storage.json")
-        }
-        guard let storage = try? JSONDecoder().decode(VSCodeStorage.self, from: data) else {
-            return .failure("Unable to parse VS Code recent folder entries")
         }
 
         // Prefer menubar Open Recent ordering — reflects what the user last opened.
-        let menuRecentPaths = recentFolderPathsFromMenuBarData(data)
+        let menuRecentPaths = recentFolderPathsFromMenuBarData(root)
         if let selected = firstValidRecentPath(fromPaths: menuRecentPaths) {
             return .success(selected)
         }
 
-        let folderUris = (storage.backupWorkspaces?.folders ?? [])
-            .map(\.folderUri)
-            .reversed()
+        let folderUris = backupWorkspaceFolderUris(root).reversed()
 
         if folderUris.isEmpty {
             return .failure("VS Code has no recent folder entries")
@@ -240,14 +224,19 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         return .failure("No valid recent VS Code folder exists on disk")
     }
 
-    private func recentFolderPathsFromMenuBarData(_ data: Data) -> [String] {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let menuData = root["lastKnownMenubarData"] else {
-            return []
-        }
+    private func recentFolderPathsFromMenuBarData(_ root: [String: Any]) -> [String] {
+        guard let menuData = root["lastKnownMenubarData"] else { return [] }
         var paths: [String] = []
         collectOpenRecentFolderPaths(from: menuData, into: &paths)
         return paths
+    }
+
+    private func backupWorkspaceFolderUris(_ root: [String: Any]) -> [String] {
+        guard let backupWorkspaces = root["backupWorkspaces"] as? [String: Any],
+              let folders = backupWorkspaces["folders"] as? [[String: Any]] else {
+            return []
+        }
+        return folders.compactMap { $0["folderUri"] as? String }
     }
 
     private func collectOpenRecentFolderPaths(from node: Any, into paths: inout [String]) {

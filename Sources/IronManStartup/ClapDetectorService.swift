@@ -13,6 +13,23 @@ struct ClapLogEntry: Identifiable {
     let time: String
 }
 
+private struct VSCodeStorage: Decodable {
+    let backupWorkspaces: BackupWorkspaces?
+}
+
+private struct BackupWorkspaces: Decodable {
+    let folders: [BackupFolder]
+}
+
+private struct BackupFolder: Decodable {
+    let folderUri: String
+}
+
+private enum VSCodeFolderSelection {
+    case success(String)
+    case failure(String)
+}
+
 final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
     private let historyLength = 120
     private let debounceMs: Double = 120
@@ -32,6 +49,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
     private var lastTriggerMs: Double = 0
     private var pendingFirstMs: Double?
     private var pulseResetWorkItem: DispatchWorkItem?
+    private var armedVSCodeFolderPath: String?
 
     func toggleListening() {
         isListening ? stop() : start()
@@ -40,6 +58,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
     func start() {
         if isListening { return }
         errorText = nil
+        armedVSCodeFolderPath = mostRecentVSCodeFolderPath()
 
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             DispatchQueue.main.async {
@@ -161,6 +180,203 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         let config = NSWorkspace.OpenConfiguration()
         config.activates = false
         NSWorkspace.shared.open(url, configuration: config, completionHandler: nil)
+
+        _ = openArmedMostRecentVSCodeProject()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            NSRunningApplication
+                .runningApplications(withBundleIdentifier: "com.microsoft.VSCode")
+                .first?
+                .activate()
+        }
+    }
+
+    private func mostRecentVSCodeFolderPath() -> String? {
+        let selection = resolveMostRecentVSCodeFolderPath()
+        if case let .failure(message) = selection {
+            addLog(message)
+            return nil
+        }
+        if case let .success(path) = selection {
+            return path
+        }
+        return nil
+    }
+
+    private func resolveMostRecentVSCodeFolderPath() -> VSCodeFolderSelection {
+        guard let storageURL = firstExistingVSCodeStorageURL() else {
+            return .failure("VS Code storage.json was not found")
+        }
+        guard let data = try? Data(contentsOf: storageURL) else {
+            return .failure("Unable to read VS Code storage.json")
+        }
+        guard let storage = try? JSONDecoder().decode(VSCodeStorage.self, from: data) else {
+            return .failure("Unable to parse VS Code recent folder entries")
+        }
+
+        // Prefer menubar Open Recent ordering — reflects what the user last opened.
+        let menuRecentPaths = recentFolderPathsFromMenuBarData(data)
+        if let selected = firstValidRecentPath(fromPaths: menuRecentPaths) {
+            return .success(selected)
+        }
+
+        let folderUris = (storage.backupWorkspaces?.folders ?? [])
+            .map(\.folderUri)
+            .reversed()
+
+        if folderUris.isEmpty {
+            return .failure("VS Code has no recent folder entries")
+        }
+
+        let fallbackPaths = folderUris.compactMap { uri -> String? in
+            guard let url = URL(string: uri), url.isFileURL else { return nil }
+            return url.standardizedFileURL.path
+        }
+
+        if let selected = firstValidRecentPath(fromPaths: fallbackPaths) {
+            return .success(selected)
+        }
+
+        return .failure("No valid recent VS Code folder exists on disk")
+    }
+
+    private func recentFolderPathsFromMenuBarData(_ data: Data) -> [String] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let menuData = root["lastKnownMenubarData"] else {
+            return []
+        }
+        var paths: [String] = []
+        collectOpenRecentFolderPaths(from: menuData, into: &paths)
+        return paths
+    }
+
+    private func collectOpenRecentFolderPaths(from node: Any, into paths: inout [String]) {
+        if let dict = node as? [String: Any] {
+            if let id = dict["id"] as? String,
+               id == "openRecentFolder",
+               let uri = dict["uri"] as? [String: Any],
+               let scheme = uri["scheme"] as? String,
+               scheme == "file",
+               let path = uri["path"] as? String {
+                paths.append(path)
+            }
+            for value in dict.values {
+                collectOpenRecentFolderPaths(from: value, into: &paths)
+            }
+            return
+        }
+        if let array = node as? [Any] {
+            for value in array {
+                collectOpenRecentFolderPaths(from: value, into: &paths)
+            }
+        }
+    }
+
+    private func firstValidRecentPath(fromPaths paths: [String]) -> String? {
+        for rawPath in paths {
+            let path = URL(fileURLWithPath: rawPath, isDirectory: true).standardizedFileURL.path
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            if exists && isDirectory.boolValue && isVisibleProjectPath(path) && !isRunningFolderPath(path) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private func isVisibleProjectPath(_ path: String) -> Bool {
+        let components = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        for component in components {
+            if component == "/" { continue }
+            if component.hasPrefix(".") { return false }
+        }
+        return true
+    }
+
+    private func isRunningFolderPath(_ path: String) -> Bool {
+        let candidate = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
+        for root in runningContextPaths() {
+            if candidate == root || candidate.hasPrefix(root + "/") || root.hasPrefix(candidate + "/") {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func runningContextPaths() -> [String] {
+        var paths: [String] = []
+
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+            .standardizedFileURL.path
+        if cwd != "/" { paths.append(cwd) }
+
+        let executableDir = URL(fileURLWithPath: CommandLine.arguments[0], isDirectory: false)
+            .deletingLastPathComponent()
+            .standardizedFileURL.path
+        if executableDir != "/" { paths.append(executableDir) }
+
+        return Array(Set(paths))
+    }
+
+    private func firstExistingVSCodeStorageURL() -> URL? {
+        for candidate in vscodeStorageCandidates() {
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private func vscodeStorageCandidates() -> [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [
+            home.appendingPathComponent("Library/Application Support/Code/User/globalStorage/storage.json"),
+            home.appendingPathComponent(".config/Code/User/globalStorage/storage.json")
+        ]
+    }
+
+    private func openArmedMostRecentVSCodeProject() -> Bool {
+        let path: String
+        if let livePath = mostRecentVSCodeFolderPath() {
+            path = livePath
+        } else if let armedVSCodeFolderPath {
+            path = armedVSCodeFolderPath
+        } else {
+            addLog("No valid recent VS Code folder exists on disk")
+            return false
+        }
+
+        let codeCandidates = [
+            "/opt/homebrew/bin/code",
+            "/usr/local/bin/code",
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+        ]
+
+        for codePath in codeCandidates where FileManager.default.isExecutableFile(atPath: codePath) {
+            if runProcess(executablePath: codePath, arguments: [path], currentDirectory: NSHomeDirectory()) {
+                addLog("Opened recent VS Code project")
+                return true
+            }
+        }
+
+        addLog("Could not launch VS Code CLI to open recent project")
+        return false
+    }
+
+    private func runProcess(executablePath: String, arguments: [String], currentDirectory: String? = nil) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        if let currentDirectory {
+            process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory, isDirectory: true)
+        }
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
 
     private func addLog(_ text: String) {

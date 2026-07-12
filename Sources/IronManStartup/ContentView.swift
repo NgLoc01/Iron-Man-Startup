@@ -149,7 +149,9 @@ struct ContentView: View {
             Spacer(minLength: 0)
 
             HStack {
-                Button("Quit") { }
+                Button("Quit") {
+                    NSApplication.shared.terminate(nil)
+                }
                 Spacer()
             }
         }

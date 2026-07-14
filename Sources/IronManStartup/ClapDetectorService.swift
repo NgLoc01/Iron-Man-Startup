@@ -13,31 +13,42 @@ struct ClapLogEntry: Identifiable {
     let time: String
 }
 
-private enum VSCodeFolderSelection {
+private enum VSCodeFolderSelection { //custom result type: either a resolved path or a reason it failed
     case success(String)
     case failure(String)
 }
 
+/*
+- DoubleClapDetectorService: the shared object, owns the whole mic -> clap -> action pipeline
+    - start()/stop()/toggleListening(): mic permission + AVAudioEngine lifecycle
+    - startEngine(): installs the tap that reads raw audio and computes level
+    - processSample()/registerClap(): rising-edge detection, debounce, double-clap timing window
+    - fireEvent(): drives the pulse ring/label, then fires the double-clap action once it's visible
+    - openYouTubeLink(): the double-clap action, opens the video and the VS Code project below
+    - mostRecentVSCodeFolderPath() down to vscodeStorageCandidates(): finds + validates the folder
+    - openArmedMostRecentVSCodeProject()/runProcess(): launches the `code` CLI
+    - addLog()/computeRms(): small helpers used throughout
+*/
 final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
-    private let historyLength = 120
-    private let debounceMs: Double = 120
-    private let minGapMs: Double = 100
-    private let maxGapMs: Double = 600
+    private let historyLength = 120 
+    private let debounceMs: Double = 120 //ignore any new trigger this soon after the last one
+    private let minGapMs: Double = 100   //second clap must be at least this long after the first
+    private let maxGapMs: Double = 600   //...and no longer than this, or it's not a "double" clap
 
     @Published var isListening = false
     @Published var threshold: Float = 0.05
     @Published var level: Float = 0
     @Published var errorText: String?
     @Published var logs: [ClapLogEntry] = []
-    @Published var history: [Float] = Array(repeating: 0, count: 120)
+    @Published var history: [Float] = Array(repeating: 0, count: 120) //circular buffer of recent audio levels
     @Published var pulseKind: ClapPulseKind?
 
     private var audioEngine: AVAudioEngine?
-    private var isAbove = false
-    private var lastTriggerMs: Double = 0
-    private var pendingFirstMs: Double?
-    private var pulseResetWorkItem: DispatchWorkItem?
-    private var armedVSCodeFolderPath: String?
+    private var isAbove = false 
+    private var lastTriggerMs: Double = 0               //debounce bookkeeping
+    private var pendingFirstMs: Double?                 //timestamp of a clap waiting for its pair
+    private var pulseResetWorkItem: DispatchWorkItem?   //the scheduled "clear the pulse ring" task
+    private var armedVSCodeFolderPath: String?          //folder resolved at listen-start, used as a fallback
 
     func toggleListening() {
         isListening ? stop() : start()
@@ -48,8 +59,8 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         errorText = nil
         armedVSCodeFolderPath = mostRecentVSCodeFolderPath()
 
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-            DispatchQueue.main.async {
+        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in //fires on a background thread
+            DispatchQueue.main.async {                                      //hop back to main before touching any @Published property
                 guard let self else { return }
                 if !granted {
                     self.errorText = "Microphone access was denied."
@@ -79,7 +90,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         let format = inputNode.inputFormat(forBus: 0)
 
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in //fires repeatedly on a background audio thread, buffer = ~1024 raw samples
             let rms = Self.computeRms(buffer: buffer)
             let nowMs = Date().timeIntervalSince1970 * 1000
             DispatchQueue.main.async {
@@ -107,23 +118,23 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         }
 
         let above = rms > threshold
-        if above && !isAbove {
+        if above && !isAbove { //only trigger on the moment it crosses above, not every sample it stays above
             isAbove = true
             registerClap(nowMs: nowMs)
         } else if !above {
             isAbove = false
         }
 
-        if let pendingFirstMs, nowMs - pendingFirstMs > maxGapMs {
+        if let pendingFirstMs, nowMs - pendingFirstMs > maxGapMs { //a lone clap that nothing ever paired with
             self.pendingFirstMs = nil
         }
     }
 
     private func registerClap(nowMs: Double) {
-        if nowMs - lastTriggerMs < debounceMs { return }
+        if nowMs - lastTriggerMs < debounceMs { return } //too soon after the last trigger, ignore it
         lastTriggerMs = nowMs
 
-        if pendingFirstMs == nil {
+        if pendingFirstMs == nil { //no clap waiting, this one becomes the first of a potential pair
             pendingFirstMs = nowMs
             fireEvent(.single)
             return
@@ -132,22 +143,22 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         guard let firstMs = pendingFirstMs else { return }
         let gap = nowMs - firstMs
 
-        if gap >= minGapMs && gap <= maxGapMs {
+        if gap >= minGapMs && gap <= maxGapMs { //landed inside the window, this is a real double clap
             pendingFirstMs = nil
             fireEvent(.double)
-        } else if gap > maxGapMs {
+        } else if gap > maxGapMs { //too slow, the old pending clap is stale, this one starts a new pair
             pendingFirstMs = nowMs
             fireEvent(.single)
         }
     }
 
     private func fireEvent(_ kind: ClapPulseKind) {
-        pulseKind = kind
-        pulseResetWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
+        pulseKind = kind 
+        pulseResetWorkItem?.cancel()                        //a new clap cancels any still-pending reset from the last one
+        let workItem = DispatchWorkItem { [weak self] in    //runs after the 0.7s pulse has been visible
             self?.pulseKind = nil
             if kind == .double {
-                self?.openYouTubeLink()
+                self?.openYouTubeLink()                     //deliberately delayed, so the flash isn't hidden by stop()
             }
         }
         pulseResetWorkItem = workItem
@@ -162,16 +173,16 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
     }
 
     private func openYouTubeLink() {
-        stop()
+        stop()                                                  //this is a one-shot gesture, not continuous listening
         guard let url = URL(string: "https://www.youtube.com/watch?v=pAgnJDJN4VA") else { return }
 
         let config = NSWorkspace.OpenConfiguration()
-        config.activates = false
+        config.activates = false                                //opens in the background, doesn't steal focus from whatever you're in
         NSWorkspace.shared.open(url, configuration: config, completionHandler: nil)
 
         _ = openArmedMostRecentVSCodeProject()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { //give VS Code a moment to launch first
             NSRunningApplication
                 .runningApplications(withBundleIdentifier: "com.microsoft.VSCode")
                 .first?
@@ -179,7 +190,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func mostRecentVSCodeFolderPath() -> String? {
+    private func mostRecentVSCodeFolderPath() -> String? { //unwraps VSCodeFolderSelection into a plain optional
         let selection = resolveMostRecentVSCodeFolderPath()
         if case let .failure(message) = selection {
             addLog(message)
@@ -206,7 +217,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
             return .success(selected)
         }
 
-        let folderUris = backupWorkspaceFolderUris(root).reversed()
+        let folderUris = backupWorkspaceFolderUris(root).reversed() //fallback if menubar data is missing/empty
 
         if folderUris.isEmpty {
             return .failure("VS Code has no recent folder entries")
@@ -239,7 +250,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         return folders.compactMap { $0["folderUri"] as? String }
     }
 
-    private func collectOpenRecentFolderPaths(from node: Any, into paths: inout [String]) {
+    private func collectOpenRecentFolderPaths(from node: Any, into paths: inout [String]) { //recursive: calls itself on every nested dict/array to walk the whole JSON tree
         if let dict = node as? [String: Any] {
             if let id = dict["id"] as? String,
                id == "openRecentFolder",
@@ -273,7 +284,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         return nil
     }
 
-    private func isVisibleProjectPath(_ path: String) -> Bool {
+    private func isVisibleProjectPath(_ path: String) -> Bool { //rejects hidden/dot-prefixed folders
         let components = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
         for component in components {
             if component == "/" { continue }
@@ -282,7 +293,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         return true
     }
 
-    private func isRunningFolderPath(_ path: String) -> Bool {
+    private func isRunningFolderPath(_ path: String) -> Bool { //don't open the folder this app is running from
         let candidate = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
         for root in runningContextPaths() {
             if candidate == root || candidate.hasPrefix(root + "/") || root.hasPrefix(candidate + "/") {
@@ -292,7 +303,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         return false
     }
 
-    private func runningContextPaths() -> [String] {
+    private func runningContextPaths() -> [String] { //where this app is being run from, right now
         var paths: [String] = []
 
         let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
@@ -326,16 +337,16 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
 
     private func openArmedMostRecentVSCodeProject() -> Bool {
         let path: String
-        if let livePath = mostRecentVSCodeFolderPath() {
+        if let livePath = mostRecentVSCodeFolderPath() { //re-resolve fresh, right at trigger time
             path = livePath
-        } else if let armedVSCodeFolderPath {
+        } else if let armedVSCodeFolderPath {            //only used if the live resolution above just failed
             path = armedVSCodeFolderPath
         } else {
             addLog("No valid recent VS Code folder exists on disk")
             return false
         }
 
-        let codeCandidates = [
+        let codeCandidates = [ //different machines install the `code` CLI in different places
             "/opt/homebrew/bin/code",
             "/usr/local/bin/code",
             "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
@@ -352,7 +363,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         return false
     }
 
-    private func runProcess(executablePath: String, arguments: [String], currentDirectory: String? = nil) -> Bool {
+    private func runProcess(executablePath: String, arguments: [String], currentDirectory: String? = nil) -> Bool { //launches an external program, like typing a command in Terminal
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
         process.arguments = arguments
@@ -361,7 +372,7 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         }
         do {
             try process.run()
-            process.waitUntilExit()
+            process.waitUntilExit() //blocks until the `code` command finishes handing off to VS Code
             return process.terminationStatus == 0
         } catch {
             return false
@@ -372,12 +383,14 @@ final class DoubleClapDetectorService: ObservableObject, @unchecked Sendable {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         let entry = ClapLogEntry(text: text, time: formatter.string(from: Date()))
-        logs.insert(entry, at: 0)
-        if logs.count > 12 {
+        logs.insert(entry, at: 0)   //newest entry first
+        if logs.count > 12 {        //cap the list so it doesn't grow forever
             logs = Array(logs.prefix(12))
         }
     }
 
+    //root mean square: square every sample (kills the +/- sign), average those squares, then
+    //square-root back down. Reflects loudness better than a raw average, which cancels out to ~0
     private static func computeRms(buffer: AVAudioPCMBuffer) -> Float {
         guard let channelData = buffer.floatChannelData else { return 0 }
         let channel = channelData[0]

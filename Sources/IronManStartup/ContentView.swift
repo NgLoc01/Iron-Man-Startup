@@ -7,8 +7,15 @@ struct ContentView: View   defines screen as a View
    var body: some View     View protocol, UI description, must return a View
         VStack { }         top-level container, stacks children top to bottom
            ZStack { }      nested container, stacks children front to back
-      }  
+      }
+
+@State                     local value only this view owns (audioPlayer, isHovering below)
+@EnvironmentObject         object shared from a parent view, here injected in IronManStartup.swift
+@Published (on detector)   changing it auto-refreshes every view that reads it, no manual wiring
+.animation(_, value:)      makes SwiftUI smoothly animate when "value" changes, instead of snapping
+.transition(_)             how a view animates in/out when it's added/removed (the pulse ring below)
 */
+
 
 /*
 Current UI setup:
@@ -24,9 +31,9 @@ Current UI setup:
 */
 
 struct ContentView: View {
-    @State private var audioPlayer: AVAudioPlayer?
-    @State private var isHovering = false
-    @EnvironmentObject private var detector: DoubleClapDetectorService
+    @State private var audioPlayer: AVAudioPlayer? 
+    @State private var isHovering = false 
+    @EnvironmentObject private var detector: DoubleClapDetectorService //shared mic/clap service
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) { //Main vertical stack for the entire content
@@ -58,8 +65,8 @@ struct ContentView: View {
 
             Spacer(minLength: 0)
 
-            Button {
-                detector.toggleListening()
+            Button { //tapping the whole circle starts/stops listening
+                detector.toggleListening() //calls start()/stop() on the shared DoubleClapDetectorService
             } label: {
                 ZStack { //ZStack for pulse indicator, also doubles as the listen toggle
                     Circle()
@@ -80,7 +87,7 @@ struct ContentView: View {
                             radius: 22
                         )
 
-                    if detector.pulseKind != nil {
+                    if detector.pulseKind != nil { //ring only shows for ~0.7s right after a clap fires
                         Circle()
                             .stroke(
                                 detector.pulseKind == .double ? Color.cyan : Color.blue,
@@ -90,24 +97,24 @@ struct ContentView: View {
                             .transition(.scale.combined(with: .opacity))
                     }
 
-                    Text(detector.isListening ? (detector.pulseKind == .double ? "DOUBLE" : "ON") : "OFF")
+                    Text(detector.isListening ? (detector.pulseKind == .double ? "DOUBLE" : "ON") : "OFF") //label inside the circle, changes based on listening state
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
                         .foregroundStyle(Color.white)
                 }
             }
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
-            .animation(.easeOut(duration: 0.2), value: detector.level)
-            .animation(.easeOut(duration: 0.25), value: detector.pulseKind != nil)
+            .animation(.easeOut(duration: 0.2), value: detector.level) //smooths the scale/glow changes
+            .animation(.easeOut(duration: 0.25), value: detector.pulseKind != nil) //smooths the ring in/out
 
-            SoundwaveView(history: detector.history, threshold: detector.threshold)
+            SoundwaveView(history: detector.history, threshold: detector.threshold) //custom view, defined below
                 .frame(height: 70)
 
-            Text(detector.isListening ? "Listening" : "Standing by")
+            Text(detector.isListening ? "Listening" : "Standing by") //status text, changes based on listening state
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .frame(maxWidth: .infinity, alignment: .center)
 
-            if let errorText = detector.errorText {
+            if let errorText = detector.errorText { //only appears once start()/startEngine() sets an error
                 Text(errorText)
                     .font(.system(size: 13, weight: .regular, design: .rounded))
                     .foregroundStyle(Color.red.opacity(0.9))
@@ -134,18 +141,18 @@ struct ContentView: View {
                     .tint(.blue)
             }
 
-            Text("EVENT LOG")
+            Text("EVENT LOG") //header for the log section, always visible
                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 .foregroundStyle(.secondary)
 
-            ScrollView {
+            ScrollView { //scrolls once the log grows past frame(maxHeight:) below
                 VStack(alignment: .leading, spacing: 10) {
                     if detector.logs.isEmpty {
                         Text("No events yet. Clap to begin.")
                             .font(.system(size: 13, weight: .regular, design: .monospaced))
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(detector.logs) { entry in
+                        ForEach(detector.logs) { entry in //one HStack per ClapLogEntry, newest first
                             HStack(spacing: 12) {
                                 Text(entry.time)
                                     .foregroundStyle(.secondary)
@@ -162,7 +169,7 @@ struct ContentView: View {
 
             Spacer(minLength: 0)
 
-            HStack {
+            HStack { //HStack for the Quit button
                 Button("Quit") {
                     NSApplication.shared.terminate(nil)
                 }
@@ -185,7 +192,7 @@ struct ContentView: View {
     }
 }
 
-private struct SoundwaveView: View {
+private struct SoundwaveView: View { //custom view for the rolling soundwave history + threshold line
     let history: [Float]
     let threshold: Float
 
@@ -219,7 +226,7 @@ private struct SoundwaveView: View {
         }
     }
 
-    private func yPosition(for value: Float, height: CGFloat) -> CGFloat {
+    private func yPosition(for value: Float, height: CGFloat) -> CGFloat { //higher level = higher on screen
         let clamped = min(max(value, 0), 0.8)
         return height - CGFloat(clamped / 0.8) * (height - 2)
     }
